@@ -69,7 +69,7 @@ func (c *Client) initCmd(ctx context.Context) *exec.Cmd {
 
 func (c *Client) runCommand(args ...string) (*Pipes, error) {
 	cmd := c.initCmd(c.ctx)
-	var pipes *Pipes
+	addCmdArgs(cmd, args...)
 	var err error
 	if c.UsePipes {
 		stdin, err := cmd.StdinPipe()
@@ -84,19 +84,23 @@ func (c *Client) runCommand(args ...string) (*Pipes, error) {
 		if err != nil {
 			return nil, err
 		}
-		pipes = &Pipes{
+		pipes := &Pipes{
 			Stdin:  stdin,
 			Stdout: stdout,
 			Stderr: stderr,
 		}
+
+		err = cmd.Start()
+		if err != nil {
+			return nil, err
+		}
+		c.addWaitForCmd(cmd)
+
+		return pipes, nil
 	}
-	addCmdArgs(cmd, args...)
-	err = cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-	c.addWaitForCmd(cmd)
-	return pipes, nil
+
+	err = cmd.Run()
+	return nil, err
 }
 
 // addCmdArgs add args to cmd.
