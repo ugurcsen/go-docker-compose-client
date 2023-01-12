@@ -7,6 +7,11 @@ Docker Compose V2 Go client
 
 Warning: Only the `docker compose` command is supported by the Docker CLI plugin system. Other commands are not supported and may not work as expected.
 
+## Installation
+```bash
+go get github.com/ugurcsen/go-docker-compose-client
+```
+
 Features
 -----
 - [x] Build
