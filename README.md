@@ -1,5 +1,10 @@
 Docker Compose V2 Go client
 ===========================
+[![Go Reference](https://pkg.go.dev/badge/github.com/ugurcsen/go-docker-compose-client.svg)](https://pkg.go.dev/github.com/ugurcsen/go-docker-compose-client)
+[![Go Report Card](https://goreportcard.com/badge/github.com/ugurcsen/go-docker-compose-client)](https://goreportcard.com/report/github.com/ugurcsen/go-docker-compose-client)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub release](https://img.shields.io/github/release/ugurcsen/go-docker-compose-client.svg)](https://github.com/ugurcsen/go-docker-compose-client/releases)
+
 Warning: Only the `docker compose` command is supported by the Docker CLI plugin system. Other commands are not supported and may not work as expected.
 
 Features
