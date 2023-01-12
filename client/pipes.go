@@ -1,6 +1,9 @@
 package client
 
-import "io"
+import (
+	"bytes"
+	"io"
+)
 
 type Pipes struct {
 	Stdin  io.WriteCloser
@@ -34,18 +37,9 @@ func (p *Pipes) Close() error {
 }
 
 func pipeBytes(pipe io.ReadCloser) []byte {
-	var r []byte
-	bfr := make([]byte, 1024)
-	for {
-		i, err := pipe.Read(bfr)
-		if err != nil {
-			break
-		}
-		if i > 0 {
-			r = append(r, bfr[:i]...)
-		}
-	}
-	return r
+	bfr := bytes.Buffer{}
+	bfr.ReadFrom(pipe)
+	return bfr.Bytes()
 }
 
 func (p *Pipes) StdoutString() string {
