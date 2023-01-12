@@ -1,9 +1,9 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -22,6 +22,7 @@ type Client struct {
 	waitGroup    sync.WaitGroup
 	ctx          context.Context
 	dockerClient *client.Client
+	UsePipes     bool
 }
 
 // NewClientWithContext create a new docker compose client with custom context.
@@ -44,6 +45,7 @@ func NewClientWithContext(ctx context.Context, composePath string) (*Client, err
 		projectName:  CompileNames(filepath.Base(composePath)),
 		dockerClient: dockerClient,
 		ctx:          ctx,
+		UsePipes:     true,
 	}
 	return c, nil
 }
@@ -59,12 +61,42 @@ func CompileNames(str string) string {
 }
 
 // initCmd initialize cmd for docker compose.
-func (c *Client) initCmd(ctx context.Context, buffer *bytes.Buffer) *exec.Cmd {
+func (c *Client) initCmd(ctx context.Context) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, c.bin, c.baseArgs...)
 	cmd.Dir = c.composePath
-	cmd.Stdout = buffer
-	cmd.Stderr = buffer
 	return cmd
+}
+
+func (c *Client) runCommand(args ...string) (*Pipes, error) {
+	cmd := c.initCmd(c.ctx)
+	var pipes *Pipes
+	var err error
+	if c.UsePipes {
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return nil, err
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return nil, err
+		}
+		pipes = &Pipes{
+			Stdin:  stdin,
+			Stdout: stdout,
+			Stderr: stderr,
+		}
+	}
+	addCmdArgs(cmd, args...)
+	err = cmd.Start()
+	if err != nil {
+		return nil, err
+	}
+	c.addWaitForCmd(cmd)
+	return pipes, nil
 }
 
 // addCmdArgs add args to cmd.
@@ -78,93 +110,43 @@ func (c *Client) Wait() {
 }
 
 // Up create and start containers.
-func (c *Client) Up() (*bytes.Buffer, error) {
-	stdout := &bytes.Buffer{}
-	cmd := c.initCmd(c.ctx, stdout)
-	addCmdArgs(cmd, "up", "-d")
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-	c.addWaitForCmd(cmd)
-	return stdout, nil
-}
-
-func (c *Client) baseStartStop(start bool, service *string) (*bytes.Buffer, error) {
-	stdout := &bytes.Buffer{}
-	cmd := c.initCmd(c.ctx, stdout)
-	if start {
-		if service == nil {
-			addCmdArgs(cmd, "start")
-		} else {
-			addCmdArgs(cmd, "start", CompileNames(*service))
-		}
-	} else {
-		if service == nil {
-			addCmdArgs(cmd, "stop")
-		} else {
-			addCmdArgs(cmd, "stop", CompileNames(*service))
-		}
-	}
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-
-	c.addWaitForCmd(cmd)
-	return stdout, nil
+func (c *Client) Up() (*Pipes, error) {
+	return c.runCommand("up", "-d")
 }
 
 // Start service container.
-func (c *Client) Start(service string) (*bytes.Buffer, error) {
-	return c.baseStartStop(true, &service)
+func (c *Client) Start(service string) (*Pipes, error) {
+	return c.runCommand("start", CompileNames(service))
 }
 
 // StartAll start all service containers.
-func (c *Client) StartAll() (*bytes.Buffer, error) {
-	return c.baseStartStop(true, nil)
+func (c *Client) StartAll() (*Pipes, error) {
+	return c.runCommand("start")
 }
 
 // Stop service container.
-func (c *Client) Stop(service string) (*bytes.Buffer, error) {
-	return c.baseStartStop(false, &service)
+func (c *Client) Stop(service string) (*Pipes, error) {
+	return c.runCommand("stop", CompileNames(service))
 }
 
 // StopAll stop all service containers.
-func (c *Client) StopAll() (*bytes.Buffer, error) {
-	return c.baseStartStop(false, nil)
-}
-
-func (c *Client) baseBuild(service *string) (*bytes.Buffer, error) {
-	stdout := &bytes.Buffer{}
-	cmd := c.initCmd(c.ctx, stdout)
-	if service == nil {
-		addCmdArgs(cmd, "build")
-	} else {
-		addCmdArgs(cmd, "build", CompileNames(*service))
-	}
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-
-	c.addWaitForCmd(cmd)
-	return stdout, nil
+func (c *Client) StopAll() (*Pipes, error) {
+	return c.runCommand("stop")
 }
 
 // Build or rebuild services.
-func (c *Client) Build(service string) (*bytes.Buffer, error) {
-	return c.baseBuild(&service)
+func (c *Client) Build(service string) (*Pipes, error) {
+	return c.runCommand("build", CompileNames(service))
 }
 
 // BuildAll Build or rebuild services.
-func (c *Client) BuildAll() (*bytes.Buffer, error) {
-	return c.baseBuild(nil)
+func (c *Client) BuildAll() (*Pipes, error) {
+	return c.runCommand("build")
 }
 
 // Convert converts the compose file to platform's canonical format.
-func (c *Client) Convert() error {
-	panic("implement me")
+func (c *Client) Convert() (*Pipes, error) {
+	return c.runCommand("convert")
 }
 
 func (c *Client) Cp() error {
@@ -172,31 +154,23 @@ func (c *Client) Cp() error {
 }
 
 // Create creates container for a service.
-func (c *Client) Create(service string) error {
-	panic("implement me")
+func (c *Client) Create(service string) (*Pipes, error) {
+	return c.runCommand("create", CompileNames(service))
 }
 
 // CreateAll creates containers for a service.
-func (c *Client) CreateAll() error {
-	panic("implement me")
+func (c *Client) CreateAll() (*Pipes, error) {
+	return c.runCommand("create")
 }
 
 // Down stops containers and removes containers, networks, volumes, and images created by up.
-func (c *Client) Down() (*bytes.Buffer, error) {
-	stdout := &bytes.Buffer{}
-	cmd := c.initCmd(c.ctx, stdout)
-	addCmdArgs(cmd, "down")
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-	c.addWaitForCmd(cmd)
-	return stdout, nil
+func (c *Client) Down() (*Pipes, error) {
+	return c.runCommand("down")
 }
 
 // Events displays real time events from containers.
-func (c *Client) Events() error {
-	panic("implement me")
+func (c *Client) Events() (*Pipes, error) {
+	return c.runCommand("events")
 }
 
 // Exec execute a command in a running container.
@@ -209,59 +183,39 @@ func (c *Client) Images() error {
 	panic("implement me")
 }
 
-func (c *Client) baseKill(service *string) error {
-	cmd := c.initCmd(c.ctx, nil)
-	if service == nil {
-		addCmdArgs(cmd, "kill")
-	} else {
-		addCmdArgs(cmd, "kill", CompileNames(*service))
-	}
-	err := cmd.Run()
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 // Kill stops running container without removing them.
-func (c *Client) Kill(service string) error {
-	return c.baseKill(&service)
+func (c *Client) Kill(service string) (*Pipes, error) {
+	return c.runCommand("kill", CompileNames(service))
 }
 
 // KillAll stops running containers without removing them.
-func (c *Client) KillAll() error {
-	return c.baseKill(nil)
+func (c *Client) KillAll() (*Pipes, error) {
+	return c.runCommand("kill")
 }
 
 // Logs shows container logs.
-func (c *Client) Logs(service string) error {
+func (c *Client) Logs(service string) (*Pipes, error) {
 	panic("implement me")
 }
 
 // LogsStream shows container logs as a stream.
-func (c *Client) LogsStream(service string) error {
+func (c *Client) LogsStream(service string) (*Pipes, error) {
 	panic("implement me")
 }
 
 // LogsAll shows all container logs.
-func (c *Client) LogsAll() error {
+func (c *Client) LogsAll() (*Pipes, error) {
 	panic("implement me")
 }
 
 // LogsAllStream shows all container logs as a stream.
-func (c *Client) LogsAllStream() error {
+func (c *Client) LogsAllStream() (*Pipes, error) {
 	panic("implement me")
 }
 
 // Pause pauses container.
-func (c *Client) Pause(service string) error {
-	cmd := c.initCmd(c.ctx, nil)
-	addCmdArgs(cmd, "pause")
-	err := cmd.Run()
-	if err != nil {
-		return err
-	}
-	return nil
+func (c *Client) Pause(service string) (*Pipes, error) {
+	return c.runCommand("pause", CompileNames(service))
 }
 
 // PauseAll pauses all containers.
@@ -270,24 +224,18 @@ func (c *Client) PauseAll() error {
 }
 
 // Unpause unpauses container.
-func (c *Client) Unpause(service string) error {
-	cmd := c.initCmd(c.ctx, nil)
-	addCmdArgs(cmd, "unpause")
-	err := cmd.Run()
-	if err != nil {
-		return err
-	}
-	return nil
+func (c *Client) Unpause(service string) (*Pipes, error) {
+	return c.runCommand("unpause", CompileNames(service))
 }
 
 // UnpauseAll unpauses all containers.
-func (c *Client) UnpauseAll() error {
-	panic("implement me")
+func (c *Client) UnpauseAll() (*Pipes, error) {
+	return c.runCommand("unpause")
 }
 
 // Port displays public facing port of the container.
-func (c *Client) Port(service string, innerPort uint16) error {
-	panic("implement me")
+func (c *Client) Port(service string, innerPort uint16) (*Pipes, error) {
+	return c.runCommand("port", CompileNames(service), fmt.Sprintf("%d", innerPort))
 }
 
 // Ps lists running containers.
@@ -310,60 +258,28 @@ func (c *Client) Push() error {
 	panic("implement me")
 }
 
-func (c *Client) baseRestart(service *string) (*bytes.Buffer, error) {
-	stdout := &bytes.Buffer{}
-	cmd := c.initCmd(c.ctx, stdout)
-	if service == nil {
-		addCmdArgs(cmd, "restart")
-	} else {
-		addCmdArgs(cmd, "restart", *service)
-	}
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-	c.addWaitForCmd(cmd)
-	return stdout, nil
-}
-
 // Restart restart service container.
-func (c *Client) Restart(service string) (*bytes.Buffer, error) {
-	return c.baseRestart(&service)
+func (c *Client) Restart(service string) (*Pipes, error) {
+	return c.runCommand("restart", CompileNames(service))
 }
 
 // RestartAll restart service containers.
-func (c *Client) RestartAll() (*bytes.Buffer, error) {
-	return c.baseRestart(nil)
-}
-
-func (c *Client) baseRm(service *string) (*bytes.Buffer, error) {
-	stdout := &bytes.Buffer{}
-	cmd := c.initCmd(c.ctx, stdout)
-	if service == nil {
-		addCmdArgs(cmd, "rm")
-	} else {
-		addCmdArgs(cmd, "rm", *service)
-	}
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
-	}
-	c.addWaitForCmd(cmd)
-	return stdout, nil
+func (c *Client) RestartAll() (*Pipes, error) {
+	return c.runCommand("restart")
 }
 
 // Rm removes stopped service containers.
-func (c *Client) Rm(service string) (*bytes.Buffer, error) {
-	return c.baseRm(&service)
+func (c *Client) Rm(service string) (*Pipes, error) {
+	return c.runCommand("rm", CompileNames(service))
 }
 
 // RmAll removes all service containers.
-func (c *Client) RmAll() (*bytes.Buffer, error) {
-	return c.baseRm(nil)
+func (c *Client) RmAll() (*Pipes, error) {
+	return c.runCommand("rm")
 }
 
 // Run a one-off command on a service.
-func (c *Client) Run(service string, commands ...string) (*bytes.Buffer, error) {
+func (c *Client) Run(service string, commands ...string) (*Pipes, error) {
 	panic("implement me")
 }
 

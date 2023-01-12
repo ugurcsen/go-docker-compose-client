@@ -11,10 +11,20 @@ func main() {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 	cli, _ := client.NewClientWithContext(ctx, os.Getenv("project_path"))
-	pipes, err := cli.Up()
+	pipes, err := cli.Events()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(pipes.String())
+	bfr := make([]byte, 1024)
+	i := 0
+	for {
+		i, err = pipes.Stdout.Read(bfr)
+		if err != nil {
+			break
+		}
+		if i > 0 {
+			fmt.Println(string(bfr[:i]))
+		}
+	}
 	cli.Wait()
 }

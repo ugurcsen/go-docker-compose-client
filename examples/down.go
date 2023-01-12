@@ -11,10 +11,10 @@ func main() {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 	cli, _ := client.NewClientWithContext(ctx, os.Getenv("project_path"))
-	stdout, err := cli.Down()
+	pipes, err := cli.Down()
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println(pipes.String())
 	cli.Wait()
-	fmt.Println(stdout.String())
 }
