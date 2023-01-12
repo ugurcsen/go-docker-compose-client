@@ -2,12 +2,13 @@ package client
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
+	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sync"
@@ -15,22 +16,37 @@ import (
 
 // Client is a docker compose client.
 type Client struct {
-	bin          string
-	baseArgs     []string
-	composePath  string
-	projectName  string
-	waitGroup    sync.WaitGroup
-	ctx          context.Context
+	// bin is the docker compose binary path.
+	bin string
+	// composePath is the path to the docker compose project path.
+	composePath string
+	// projectName is the name of the project.
+	projectName string
+	// waitGroup is used to wait for all running processes.
+	waitGroup sync.WaitGroup
+	// ctx is the context for the client.
+	ctx context.Context
+	// dockerClient is the docker client.
 	dockerClient *client.Client
-	UsePipes     bool
+	// UsePipes use pipes to communicate with docker compose.
+	UsePipes bool
 }
 
 // NewClientWithContext create a new docker compose client with custom context.
 func NewClientWithContext(ctx context.Context, composePath string) (*Client, error) {
-	cmd := exec.Command("which", "docker")
-	byt, err := cmd.Output()
+	err := exec.Command("docker").Run()
 	if err != nil {
-		return nil, errors.New("docker not found")
+		return nil, err
+	}
+
+	f, err := os.Open(path.Join(composePath, "docker-compose.yml"))
+	if err != nil {
+		return nil, fmt.Errorf("docker-compose.yml not found in %s", composePath)
+	}
+
+	err = f.Close()
+	if err != nil {
+		return nil, err
 	}
 
 	dockerClient, err := client.NewClientWithOpts(client.FromEnv)
@@ -39,8 +55,7 @@ func NewClientWithContext(ctx context.Context, composePath string) (*Client, err
 	}
 
 	c := &Client{
-		bin:          string(byt[:len(byt)-1]),
-		baseArgs:     []string{"compose"},
+		bin:          "docker",
 		composePath:  composePath,
 		projectName:  CompileNames(filepath.Base(composePath)),
 		dockerClient: dockerClient,
@@ -62,11 +77,12 @@ func CompileNames(str string) string {
 
 // initCmd initialize cmd for docker compose.
 func (c *Client) initCmd(ctx context.Context) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, c.bin, c.baseArgs...)
+	cmd := exec.CommandContext(ctx, c.bin, "compose")
 	cmd.Dir = c.composePath
 	return cmd
 }
 
+// runCommand runs a docker compose command and create pipes.
 func (c *Client) runCommand(args ...string) (*Pipes, error) {
 	cmd := c.initCmd(c.ctx)
 	addCmdArgs(cmd, args...)
@@ -153,10 +169,6 @@ func (c *Client) Convert() (*Pipes, error) {
 	return c.runCommand("convert")
 }
 
-func (c *Client) Cp() error {
-	panic("implement me")
-}
-
 // Create creates container for a service.
 func (c *Client) Create(service string) (*Pipes, error) {
 	return c.runCommand("create", CompileNames(service))
@@ -178,13 +190,20 @@ func (c *Client) Events() (*Pipes, error) {
 }
 
 // Exec execute a command in a running container.
-func (c *Client) Exec(service string, commands ...string) error {
-	panic("implement me")
+func (c *Client) Exec(service string, commands ...string) (*Pipes, error) {
+	return c.runCommand(append([]string{"exec", CompileNames(service)}, commands...)...)
 }
 
 // Images lists images used by the created containers.
-func (c *Client) Images() error {
-	panic("implement me")
+func (c *Client) Images() ([]types.ImageSummary, error) {
+	images, err := c.dockerClient.ImageList(c.ctx, types.ImageListOptions{
+		Filters: c.createComposeFilterArgs(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return images, nil
 }
 
 // Kill stops running container without removing them.
@@ -199,22 +218,22 @@ func (c *Client) KillAll() (*Pipes, error) {
 
 // Logs shows container logs.
 func (c *Client) Logs(service string) (*Pipes, error) {
-	panic("implement me")
+	return c.runCommand("logs", CompileNames(service))
 }
 
 // LogsStream shows container logs as a stream.
 func (c *Client) LogsStream(service string) (*Pipes, error) {
-	panic("implement me")
+	return c.runCommand("logs", "-f", CompileNames(service))
 }
 
 // LogsAll shows all container logs.
 func (c *Client) LogsAll() (*Pipes, error) {
-	panic("implement me")
+	return c.runCommand("logs")
 }
 
 // LogsAllStream shows all container logs as a stream.
 func (c *Client) LogsAllStream() (*Pipes, error) {
-	panic("implement me")
+	return c.runCommand("logs", "-f")
 }
 
 // Pause pauses container.
@@ -223,8 +242,8 @@ func (c *Client) Pause(service string) (*Pipes, error) {
 }
 
 // PauseAll pauses all containers.
-func (c *Client) PauseAll() error {
-	panic("implement me")
+func (c *Client) PauseAll() (*Pipes, error) {
+	return c.runCommand("pause")
 }
 
 // Unpause unpauses container.
@@ -238,8 +257,19 @@ func (c *Client) UnpauseAll() (*Pipes, error) {
 }
 
 // Port displays public facing port of the container.
-func (c *Client) Port(service string, innerPort uint16) (*Pipes, error) {
-	return c.runCommand("port", CompileNames(service), fmt.Sprintf("%d", innerPort))
+func (c *Client) Port(service string) ([]types.Port, error) {
+	containers, err := c.Containers(false)
+	ports := make([]types.Port, 0)
+	if err != nil {
+		return nil, err
+	}
+	for i, container := range containers {
+		if container.Labels["com.docker.compose.service"] == service {
+			ports = append(ports, containers[i].Ports...)
+		}
+	}
+
+	return ports, nil
 }
 
 // Ps lists running containers.
@@ -252,14 +282,14 @@ func (c *Client) PsAll() ([]types.Container, error) {
 	return c.Containers(true)
 }
 
-// Pull service images.
-func (c *Client) Pull() error {
-	panic("implement me")
+// Top lists processes running inside a container.
+func (c *Client) Top(service string) (*Pipes, error) {
+	return c.runCommand("top", CompileNames(service))
 }
 
-// Push service images.
-func (c *Client) Push() error {
-	panic("implement me")
+// TopAll lists processes running inside all containers.
+func (c *Client) TopAll() (*Pipes, error) {
+	return c.runCommand("top")
 }
 
 // Restart restart service container.
@@ -284,7 +314,7 @@ func (c *Client) RmAll() (*Pipes, error) {
 
 // Run a one-off command on a service.
 func (c *Client) Run(service string, commands ...string) (*Pipes, error) {
-	panic("implement me")
+	return c.runCommand(append([]string{"run", "--rm", service}, commands...)...)
 }
 
 // Containers gets compose containers
@@ -319,14 +349,19 @@ func (c *Client) Volumes() ([]*types.Volume, error) {
 	return volumeListOkBody.Volumes, nil
 }
 
+// addWaitForCmd increase the wait for command counter
 func (c *Client) addWaitForCmd(cmd *exec.Cmd) {
 	c.waitGroup.Add(1)
 	go func() {
 		defer c.waitGroup.Done()
-		cmd.Wait()
+		err := cmd.Wait()
+		if err != nil {
+			fmt.Println(err.Error())
+		}
 	}()
 }
 
+// createComposeFilterArgs creates compose filter args
 func (c *Client) createComposeFilterArgs() filters.Args {
 	return filters.NewArgs(
 		filters.KeyValuePair{
